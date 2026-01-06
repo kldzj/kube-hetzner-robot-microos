@@ -1029,12 +1029,17 @@ if [[ -f /root/kube_hetzner_selinux.te ]]; then
         checkmodule -M -m -o kube_hetzner_selinux.mod kube_hetzner_selinux.te
         semodule_package -o kube_hetzner_selinux.pp -m kube_hetzner_selinux.mod
         semodule -i kube_hetzner_selinux.pp
+				setsebool -P virt_use_samba 1
+				setsebool -P domain_kernel_load_modules 1
         echo 'SELinux policy installed'
         rm /root/install-selinux-policy.sh 2>/dev/null || true
     else
         echo 'Warning: checkmodule not available, run /root/install-selinux-policy.sh after reboot'
     fi
 fi
+
+echo '==> Disabling rebootmgr...'
+systemctl disable --now rebootmgr.service || echo 'Warning: Failed to disable rebootmgr'
 
 echo '==> Done!'
 "

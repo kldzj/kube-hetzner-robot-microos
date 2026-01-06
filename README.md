@@ -82,6 +82,7 @@ Other Options:
   --ssh-key-url URL      URL to fetch SSH public key
   --packages LIST        Additional packages to install
   --skip-reboot          Don't reboot after installation
+  --disable-selinux      Disable SELinux
   --version              Show version
   -h, --help             Show this help
 ```
@@ -122,6 +123,14 @@ If you don't need certain default modules (e.g., dm_crypt):
 
 ```bash
 ./install-microos.sh --hostname node1 --skip-kernel-modules "dm_crypt"
+```
+
+### Disable SELinux
+
+If you prefer to run without SELinux (not recommended for production):
+
+```bash
+./install-microos.sh --hostname node1 --disable-selinux
 ```
 
 ### With vSwitch for Hetzner Cloud Connectivity

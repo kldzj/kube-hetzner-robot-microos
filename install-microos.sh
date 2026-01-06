@@ -49,6 +49,7 @@ SKIP_REBOOT=0
 ENABLE_RAID=""
 KERNEL_MODULES=""
 SKIP_KERNEL_MODULES=""
+DISABLE_SELINUX=""
 SSH_PUBLIC_KEY=""
 SSH_PUBLIC_KEY_URL=""
 
@@ -215,6 +216,10 @@ parse_args() {
 			SKIP_REBOOT=1
 			shift
 			;;
+		--disable-selinux)
+			DISABLE_SELINUX=1
+			shift
+			;;
 		--vswitch-vlan)
 			VSWITCH_VLAN_ID=$(require_arg "$1" "${2:-}")
 			shift 2
@@ -317,6 +322,7 @@ Other Options:
   --ssh-key-url URL      URL to fetch SSH public key
   --packages LIST        Additional packages to install
   --skip-reboot          Don't reboot after installation
+  --disable-selinux      Disable SELinux (enabled by default)
   --version              Show version
   -h, --help             Show this help
 
@@ -335,6 +341,9 @@ Examples:
 
   # Skip specific default kernel modules
   ./install-microos.sh --hostname node1 --skip-kernel-modules "dm_crypt"
+
+  # Disable SELinux
+  ./install-microos.sh --hostname node1 --disable-selinux
 
   # With vSwitch for Cloud connectivity
   ./install-microos.sh --hostname node1 \
@@ -652,17 +661,66 @@ configure_system() {
 	log "Setting hostname: $HOSTNAME"
 	echo "$HOSTNAME" >"$mnt/etc/hostname"
 
+	configure_selinux "$mnt"
 	configure_kernel_modules "$mnt"
 	configure_network "$mnt"
 	configure_ssh "$mnt_root"
 	write_kube_hetzner_configs "$mnt" "$mnt_root"
-	create_postinstall_script "$mnt_root" "${EXPORTED_KERNEL_MODULES:-}"
+	create_postinstall_script "$mnt_root" "${EXPORTED_KERNEL_MODULES:-}" "$DISABLE_SELINUX"
 
 	sync
 	umount "$mnt_root"
 	umount "$mnt"
 
 	log "System configuration complete"
+}
+
+#######################################
+# Configure SELinux
+#######################################
+configure_selinux() {
+	local root="$1"
+
+	if [[ "$DISABLE_SELINUX" == "1" ]]; then
+		log "Disabling SELinux..."
+
+		# Method 1: Add selinux=0 to kernel command line (recommended method)
+		if [[ -f "$root/etc/default/grub" ]]; then
+			# Replace any existing selinux=1 with selinux=0, or add selinux=0 if not present
+			if grep -q 'selinux=1' "$root/etc/default/grub"; then
+				sed -i 's/selinux=1/selinux=0/g' "$root/etc/default/grub"
+				log "Replaced selinux=1 with selinux=0 in /etc/default/grub"
+			elif ! grep -q 'selinux=0' "$root/etc/default/grub"; then
+				# Add selinux=0 to GRUB_CMDLINE_LINUX_DEFAULT
+				sed -i 's/^GRUB_CMDLINE_LINUX_DEFAULT="\(.*\)"/GRUB_CMDLINE_LINUX_DEFAULT="\1 selinux=0"/' "$root/etc/default/grub"
+				log "Added selinux=0 to kernel command line in /etc/default/grub"
+			else
+				log "selinux=0 already present in GRUB configuration"
+			fi
+
+			# Update GRUB configuration
+			if chroot "$root" grub2-mkconfig -o /boot/grub2/grub.cfg >/dev/null 2>&1; then
+				log "GRUB configuration updated"
+			else
+				warn "Failed to update GRUB config (will be regenerated on boot)"
+			fi
+		else
+			warn "GRUB configuration file not found"
+		fi
+
+		# Method 2: Set SELINUX=disabled in /etc/selinux/config (legacy, for compatibility)
+		if [[ -f "$root/etc/selinux/config" ]]; then
+			sed -i -E 's/^SELINUX=[a-z]+/SELINUX=disabled/' "$root/etc/selinux/config"
+			log "SELinux disabled in /etc/selinux/config (legacy method)"
+		else
+			warn "SELinux config file not found, creating..."
+			mkdir -p "$root/etc/selinux"
+			echo "SELINUX=disabled" >"$root/etc/selinux/config"
+			echo "SELINUXTYPE=targeted" >>"$root/etc/selinux/config"
+		fi
+	else
+		log "SELinux enabled (enforcing mode)"
+	fi
 }
 
 #######################################
@@ -974,6 +1032,7 @@ EOF
 create_postinstall_script() {
 	local mnt_root="$1"
 	local kernel_modules="$2"
+	local disable_selinux="$3"
 
 	log "Creating post-install script..."
 
@@ -1005,6 +1064,15 @@ echo 'Loading kernel modules: $kernel_modules'
 for mod in $kernel_modules; do
     modprobe "\$mod" || echo "Warning: Failed to load module \$mod"
 done
+EOFSCRIPT
+	fi
+
+	# Add setenforce 0 if SELinux is disabled
+	if [[ "$disable_selinux" == "1" ]]; then
+		cat >>"$mnt_root/post-install.sh" <<EOFSCRIPT
+
+echo 'Disabling SELinux immediately...'
+setenforce 0 || echo "Warning: setenforce 0 failed"
 EOFSCRIPT
 	fi
 
@@ -1100,6 +1168,7 @@ print_summary() {
 	[[ -n "$IPV6_ADDRESS" ]] && log "  IPv6:         $IPV6_ADDRESS"
 	log "  DNS:          $DNS_SERVERS"
 	[[ ${#modules[@]} -gt 0 ]] && log "  Kernel modules: ${modules[*]}"
+	[[ "$DISABLE_SELINUX" == "1" ]] && log "  SELinux:      disabled" || log "  SELinux:      enabled"
 
 	if [[ -n "$VSWITCH_VLAN_ID" ]]; then
 		log "  vSwitch:      VLAN $VSWITCH_VLAN_ID ($VSWITCH_IP/$VSWITCH_NETMASK)"

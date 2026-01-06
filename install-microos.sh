@@ -23,7 +23,7 @@ set -euo pipefail
 # Configuration
 #######################################
 
-readonly VERSION="1.0.0"
+readonly VERSION="1.0.1"
 
 # Colors
 readonly RED='\033[0;31m'

@@ -47,7 +47,8 @@ HOSTNAME=""
 PACKAGES=""
 SKIP_REBOOT=0
 ENABLE_RAID=""
-ENABLE_TUN="${ENABLE_TUN:-1}"
+KERNEL_MODULES=""
+SKIP_KERNEL_MODULES=""
 SSH_PUBLIC_KEY=""
 SSH_PUBLIC_KEY_URL=""
 
@@ -64,6 +65,9 @@ VSWITCH_MTU="${VSWITCH_MTU:-1400}"
 
 # kube-hetzner required packages
 readonly KUBE_HETZNER_PACKAGES="restorecond policycoreutils policycoreutils-python-utils setools-console audit bind-utils wireguard-tools fuse open-iscsi nfs-client xfsprogs cryptsetup lvm2 git cifs-utils bash-completion mtr tcpdump udica"
+
+# Default kernel modules to enable (for kube-hetzner/CNI functionality)
+readonly DEFAULT_KERNEL_MODULES="tun dm_crypt"
 
 # Detected values (populated during execution)
 INTERFACE=""
@@ -167,9 +171,13 @@ parse_args() {
 			ENABLE_RAID=0
 			shift
 			;;
-		--no-tun)
-			ENABLE_TUN=0
-			shift
+		--kernel-modules)
+			KERNEL_MODULES=$(require_arg "$1" "${2:-}")
+			shift 2
+			;;
+		--skip-kernel-modules)
+			SKIP_KERNEL_MODULES=$(require_arg "$1" "${2:-}")
+			shift 2
 			;;
 		--ipv4)
 			IPV4_ADDRESS=$(require_arg "$1" "${2:-}")
@@ -288,7 +296,11 @@ Storage Options:
   --second-disk DEVICE   Second disk for RAID
   --raid                 Enable btrfs RAID1
   --no-raid              Disable RAID (single disk only)
-  --no-tun               Disable TUN module (enabled by default)
+
+Kernel Module Options:
+  --kernel-modules LIST  Additional kernel modules to enable (comma-separated)
+  --skip-kernel-modules  Skip default kernel modules (comma-separated)
+                         Default modules: tun, dm_crypt
 
 vSwitch/VLAN Options (for Hetzner Cloud connectivity):
   --vswitch-vlan ID      VLAN ID (4000-4091)
@@ -317,6 +329,12 @@ Examples:
 
   # With custom DNS
   ./install-microos.sh --hostname node1 --dns "1.1.1.1;8.8.8.8"
+
+  # With additional kernel modules
+  ./install-microos.sh --hostname node1 --kernel-modules "overlay,br_netfilter"
+
+  # Skip specific default kernel modules
+  ./install-microos.sh --hostname node1 --skip-kernel-modules "dm_crypt"
 
   # With vSwitch for Cloud connectivity
   ./install-microos.sh --hostname node1 \
@@ -634,11 +652,11 @@ configure_system() {
 	log "Setting hostname: $HOSTNAME"
 	echo "$HOSTNAME" >"$mnt/etc/hostname"
 
-	configure_tun "$mnt"
+	configure_kernel_modules "$mnt"
 	configure_network "$mnt"
 	configure_ssh "$mnt_root"
 	write_kube_hetzner_configs "$mnt" "$mnt_root"
-	create_postinstall_script "$mnt_root"
+	create_postinstall_script "$mnt_root" "${EXPORTED_KERNEL_MODULES:-}"
 
 	sync
 	umount "$mnt_root"
@@ -648,20 +666,53 @@ configure_system() {
 }
 
 #######################################
-# Configure TUN module
+# Configure kernel modules
 #######################################
-configure_tun() {
+configure_kernel_modules() {
 	local root="$1"
 
-	if [[ "$ENABLE_TUN" == "1" ]]; then
-		log "Configuring TUN module..."
+	# Build the list of modules to enable
+	local modules=()
 
-		mkdir -p "$root/etc/modules-load.d"
-		echo "tun" >"$root/etc/modules-load.d/tun.conf"
-		log "TUN module enabled (will load on boot)"
+	# Add default modules (minus any skipped ones)
+	if [[ -n "$SKIP_KERNEL_MODULES" ]]; then
+		IFS=',' read -ra skip_array <<<"$SKIP_KERNEL_MODULES"
+		for mod in $DEFAULT_KERNEL_MODULES; do
+			local skip=0
+			for skip_mod in "${skip_array[@]}"; do
+				[[ "$mod" == "${skip_mod// /}" ]] && skip=1 && break
+			done
+			[[ "$skip" == "0" ]] && modules+=("$mod")
+		done
 	else
-		log "TUN module disabled"
+		# Add all default modules
+		for mod in $DEFAULT_KERNEL_MODULES; do
+			modules+=("$mod")
+		done
 	fi
+
+	# Add any custom modules
+	if [[ -n "$KERNEL_MODULES" ]]; then
+		IFS=',' read -ra custom_array <<<"$KERNEL_MODULES"
+		for mod in "${custom_array[@]}"; do
+			modules+=("${mod// /}")
+		done
+	fi
+
+	# Configure the modules
+	if [[ ${#modules[@]} -gt 0 ]]; then
+		log "Configuring kernel modules: ${modules[*]}"
+		mkdir -p "$root/etc/modules-load.d"
+		for mod in "${modules[@]}"; do
+			echo "$mod" >>"$root/etc/modules-load.d/kube-hetzner.conf"
+		done
+		log "Kernel modules configured (will load on boot): ${modules[*]}"
+	else
+		log "No kernel modules configured"
+	fi
+
+	# Export the module list for use in post-install script
+	EXPORTED_KERNEL_MODULES="${modules[*]}"
 }
 
 #######################################
@@ -922,6 +973,7 @@ EOF
 #######################################
 create_postinstall_script() {
 	local mnt_root="$1"
+	local kernel_modules="$2"
 
 	log "Creating post-install script..."
 
@@ -943,11 +995,20 @@ PACKAGES="restorecond policycoreutils policycoreutils-python-utils setools-conso
 
 echo "Installing packages and configuring SELinux..."
 
-# Load TUN module immediately if enabled
-if [[ "$ENABLE_TUN" == "1" ]]; then
-    echo 'Loading TUN module...'
-    modprobe tun || echo 'Warning: Failed to load TUN module'
-fi
+# Load kernel modules immediately
+EOFSCRIPT
+
+	# Add module loading commands if modules are configured
+	if [[ -n "$kernel_modules" ]]; then
+		cat >>"$mnt_root/post-install.sh" <<EOFSCRIPT
+echo 'Loading kernel modules: $kernel_modules'
+for mod in $kernel_modules; do
+    modprobe "\$mod" || echo "Warning: Failed to load module \$mod"
+done
+EOFSCRIPT
+	fi
+
+	cat >>"$mnt_root/post-install.sh" <<EOFSCRIPT
 
 transactional-update --non-interactive run bash -c "
 set -e
@@ -998,6 +1059,29 @@ EOFSCRIPT
 # Print summary
 #######################################
 print_summary() {
+	# Build modules list for summary
+	local modules=()
+	if [[ -n "$SKIP_KERNEL_MODULES" ]]; then
+		IFS=',' read -ra skip_array <<<"$SKIP_KERNEL_MODULES"
+		for mod in $DEFAULT_KERNEL_MODULES; do
+			local skip=0
+			for skip_mod in "${skip_array[@]}"; do
+				[[ "$mod" == "${skip_mod// /}" ]] && skip=1 && break
+			done
+			[[ "$skip" == "0" ]] && modules+=("$mod")
+		done
+	else
+		for mod in $DEFAULT_KERNEL_MODULES; do
+			modules+=("$mod")
+		done
+	fi
+	if [[ -n "$KERNEL_MODULES" ]]; then
+		IFS=',' read -ra custom_array <<<"$KERNEL_MODULES"
+		for mod in "${custom_array[@]}"; do
+			modules+=("${mod// /}")
+		done
+	fi
+
 	echo ""
 	log "=========================================="
 	log "Installation Complete!"
@@ -1010,7 +1094,7 @@ print_summary() {
 	log "  IPv4:         $IPV4_ADDRESS/$IPV4_PREFIX via $IPV4_GATEWAY"
 	[[ -n "$IPV6_ADDRESS" ]] && log "  IPv6:         $IPV6_ADDRESS"
 	log "  DNS:          $DNS_SERVERS"
-	[[ "$ENABLE_TUN" == "1" ]] && log "  TUN module:   enabled" || log "  TUN module:   disabled"
+	[[ ${#modules[@]} -gt 0 ]] && log "  Kernel modules: ${modules[*]}"
 
 	if [[ -n "$VSWITCH_VLAN_ID" ]]; then
 		log "  vSwitch:      VLAN $VSWITCH_VLAN_ID ($VSWITCH_IP/$VSWITCH_NETMASK)"

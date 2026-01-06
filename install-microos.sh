@@ -1107,7 +1107,7 @@ if [[ -f /root/kube_hetzner_selinux.te ]]; then
 fi
 
 echo '==> Disabling rebootmgr...'
-systemctl disable --now rebootmgr.service || echo 'Warning: Failed to disable rebootmgr'
+systemctl disable rebootmgr.service || echo 'Warning: Failed to disable rebootmgr'
 
 echo '==> Done!'
 "

@@ -38,7 +38,7 @@ reboot
 7. Install k3s:
 
 ```bash
-curl -sfL https://get.k3s.io | INSTALL_K3S_SKIP_SELINUX_RPM=true INSTALL_K3S_VERSION="YOUR_VERSION" sh -
+curl -sfL https://get.k3s.io | INSTALL_K3S_SKIP_SELINUX_RPM=true INSTALL_K3S_VERSION="YOUR_VERSION" INSTALL_K3S_EXEC="agent --config /etc/rancher/k3s/config.yaml" sh -
 ```
 
 ## Usage

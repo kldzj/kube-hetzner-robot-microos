@@ -47,6 +47,7 @@ HOSTNAME=""
 PACKAGES=""
 SKIP_REBOOT=0
 ENABLE_RAID=""
+ENABLE_TUN="${ENABLE_TUN:-1}"
 SSH_PUBLIC_KEY=""
 SSH_PUBLIC_KEY_URL=""
 
@@ -166,6 +167,10 @@ parse_args() {
 			ENABLE_RAID=0
 			shift
 			;;
+		--no-tun)
+			ENABLE_TUN=0
+			shift
+			;;
 		--ipv4)
 			IPV4_ADDRESS=$(require_arg "$1" "${2:-}")
 			shift 2
@@ -283,6 +288,7 @@ Storage Options:
   --second-disk DEVICE   Second disk for RAID
   --raid                 Enable btrfs RAID1
   --no-raid              Disable RAID (single disk only)
+  --no-tun               Disable TUN module (enabled by default)
 
 vSwitch/VLAN Options (for Hetzner Cloud connectivity):
   --vswitch-vlan ID      VLAN ID (4000-4091)
@@ -628,6 +634,7 @@ configure_system() {
 	log "Setting hostname: $HOSTNAME"
 	echo "$HOSTNAME" >"$mnt/etc/hostname"
 
+	configure_tun "$mnt"
 	configure_network "$mnt"
 	configure_ssh "$mnt_root"
 	write_kube_hetzner_configs "$mnt" "$mnt_root"
@@ -638,6 +645,23 @@ configure_system() {
 	umount "$mnt"
 
 	log "System configuration complete"
+}
+
+#######################################
+# Configure TUN module
+#######################################
+configure_tun() {
+	local root="$1"
+
+	if [[ "$ENABLE_TUN" == "1" ]]; then
+		log "Configuring TUN module..."
+
+		mkdir -p "$root/etc/modules-load.d"
+		echo "tun" >"$root/etc/modules-load.d/tun.conf"
+		log "TUN module enabled (will load on boot)"
+	else
+		log "TUN module disabled"
+	fi
 }
 
 #######################################
@@ -919,6 +943,12 @@ PACKAGES="restorecond policycoreutils policycoreutils-python-utils setools-conso
 
 echo "Installing packages and configuring SELinux..."
 
+# Load TUN module immediately if enabled
+if [[ "$ENABLE_TUN" == "1" ]]; then
+    echo 'Loading TUN module...'
+    modprobe tun || echo 'Warning: Failed to load TUN module'
+fi
+
 transactional-update --non-interactive run bash -c "
 set -e
 
@@ -980,6 +1010,7 @@ print_summary() {
 	log "  IPv4:         $IPV4_ADDRESS/$IPV4_PREFIX via $IPV4_GATEWAY"
 	[[ -n "$IPV6_ADDRESS" ]] && log "  IPv6:         $IPV6_ADDRESS"
 	log "  DNS:          $DNS_SERVERS"
+	[[ "$ENABLE_TUN" == "1" ]] && log "  TUN module:   enabled" || log "  TUN module:   disabled"
 
 	if [[ -n "$VSWITCH_VLAN_ID" ]]; then
 		log "  vSwitch:      VLAN $VSWITCH_VLAN_ID ($VSWITCH_IP/$VSWITCH_NETMASK)"

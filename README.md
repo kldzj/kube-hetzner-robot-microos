@@ -62,6 +62,11 @@ Storage Options:
   --raid                 Enable btrfs RAID1
   --no-raid              Disable RAID (single disk only)
 
+Kernel Module Options:
+  --kernel-modules LIST  Additional kernel modules to enable (comma-separated)
+  --skip-kernel-modules  Skip default kernel modules (comma-separated)
+                         Default modules: tun, dm_crypt
+
 vSwitch/VLAN Options:
   --vswitch-vlan ID      VLAN ID (4000-4091)
   --vswitch-ip ADDRESS   Private IP for vSwitch interface
@@ -101,6 +106,22 @@ When two disks are detected, you'll be prompted to enable RAID1. Or specify expl
 
 ```bash
 ./install-microos.sh --hostname node1 --dns "1.1.1.1;8.8.8.8"
+```
+
+### With Additional Kernel Modules
+
+For advanced networking or storage features, add extra kernel modules:
+
+```bash
+./install-microos.sh --hostname node1 --kernel-modules "overlay,br_netfilter,vxlan"
+```
+
+### Skip Default Kernel Modules
+
+If you don't need certain default modules (e.g., dm_crypt):
+
+```bash
+./install-microos.sh --hostname node1 --skip-kernel-modules "dm_crypt"
 ```
 
 ### With vSwitch for Hetzner Cloud Connectivity
@@ -148,6 +169,18 @@ When RAID1 is enabled:
 - Both data and metadata are mirrored
 - Self-healing capabilities
 - Integrates with MicroOS snapshot system
+
+## Kernel Modules
+
+The installer automatically configures kernel modules required for Kubernetes and various CNI plugins:
+
+**Default modules:**
+- `tun` - Required for network tunneling (used by most CNI plugins)
+- `dm_crypt` - Device mapper crypto support (for encrypted storage)
+
+These modules are:
+- Added to `/etc/modules-load.d/kube-hetzner.conf` to load on boot
+- Loaded immediately during post-install for verification
 
 ## vSwitch Configuration
 

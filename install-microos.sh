@@ -46,6 +46,7 @@ VERIFY_IMAGE="${VERIFY_IMAGE:-1}"
 HOSTNAME=""
 PACKAGES=""
 SKIP_REBOOT=0
+SKIP_CONFIRM=0
 ENABLE_RAID=""
 KERNEL_MODULES=""
 SKIP_KERNEL_MODULES=""
@@ -249,6 +250,10 @@ parse_args() {
 			K3S_VERSION=$(require_arg "$1" "${2:-}")
 			shift 2
 			;;
+		-y | --yes)
+			SKIP_CONFIRM=1
+			shift
+			;;
 		-h | --help)
 			show_help
 			exit 0
@@ -331,6 +336,7 @@ Other Options:
   --packages LIST        Additional packages to install
   --skip-reboot          Don't reboot after installation
   --disable-selinux      Disable SELinux (enabled by default)
+  -y, --yes              Skip confirmation prompt
   --version              Show version
   -h, --help             Show this help
 
@@ -357,6 +363,9 @@ Examples:
   ./install-microos.sh --hostname node1 \
       --vswitch-vlan 4000 --vswitch-ip 10.0.1.2 \
       --vswitch-gateway 10.0.1.1 --vswitch-routes "10.0.0.0/16"
+
+  # Skip confirmation prompt (automated installs)
+  ./install-microos.sh --hostname node1 --yes
 EOF
 }
 
@@ -1273,6 +1282,132 @@ EOFSCRIPT
 }
 
 #######################################
+# Confirm installation
+#######################################
+confirm_installation() {
+	# Build modules list for display
+	local modules=()
+	if [[ -n "$SKIP_KERNEL_MODULES" ]]; then
+		IFS=',' read -ra skip_array <<<"$SKIP_KERNEL_MODULES"
+		for mod in $DEFAULT_KERNEL_MODULES; do
+			local skip=0
+			for skip_mod in "${skip_array[@]}"; do
+				[[ "$mod" == "${skip_mod// /}" ]] && skip=1 && break
+			done
+			[[ "$skip" == "0" ]] && modules+=("$mod")
+		done
+	else
+		for mod in $DEFAULT_KERNEL_MODULES; do
+			modules+=("$mod")
+		done
+	fi
+	if [[ -n "$KERNEL_MODULES" ]]; then
+		IFS=',' read -ra custom_array <<<"$KERNEL_MODULES"
+		for mod in "${custom_array[@]}"; do
+			modules+=("${mod// /}")
+		done
+	fi
+
+	# Build module list string
+	local module_str=""
+	if [[ ${#modules[@]} -gt 0 ]]; then
+		module_str="${modules[*]}"
+	else
+		module_str="(none)"
+	fi
+
+	# Build RAID info
+	local raid_info="disabled"
+	if [[ "$ENABLE_RAID" == "1" ]]; then
+		raid_info="${GREEN}enabled (RAID1)${NC} on ${SECOND_DISK}"
+	fi
+
+	# Build SELinux info
+	local selinux_info="${GREEN}enabled${NC}"
+	if [[ "$DISABLE_SELINUX" == "1" ]]; then
+		selinux_info="${RED}disabled${NC}"
+	fi
+
+	# Build SSH key info
+	local ssh_info="No SSH keys configured!"
+	if [[ -n "$SSH_PUBLIC_KEY" || -n "$SSH_PUBLIC_KEY_URL" || -f /root/.ssh/authorized_keys ]]; then
+		ssh_info="${GREEN}configured${NC}"
+	fi
+
+	# Build k3s version info
+	local k3s_info="latest"
+	if [[ -n "$K3S_VERSION" ]]; then
+		k3s_info="${K3S_VERSION}"
+	fi
+
+	# Build vSwitch info
+	local vswitch_info=""
+	if [[ -n "$VSWITCH_VLAN_ID" ]]; then
+		vswitch_info="
+  ${YELLOW}vSwitch:${NC}
+    VLAN ID:      ${VSWITCH_VLAN_ID}
+    IP:           ${VSWITCH_IP}/${VSWITCH_NETMASK}
+    Gateway:      ${VSWITCH_GATEWAY}
+    MTU:          ${VSWITCH_MTU}
+    Routes:       ${VSWITCH_ROUTES:-(none)}"
+	fi
+
+	# Display summary
+	echo ""
+	echo -e "${GREEN}========================================${NC}"
+	echo -e "${GREEN}  Installation Configuration Summary${NC}"
+	echo -e "${GREEN}========================================${NC}"
+	echo ""
+	echo -e "${YELLOW}System:${NC}"
+	echo "  Hostname:     $HOSTNAME"
+	echo -e "  SELinux:      $selinux_info"
+	echo "  SSH keys:     $ssh_info"
+	echo ""
+	echo -e "${YELLOW}Storage:${NC}"
+	echo -e "  Target disk:  ${RED}$TARGET_DISK${NC} ($(lsblk -dn -o SIZE "$TARGET_DISK" 2>/dev/null || echo "?"))"
+	echo -e "  RAID1:        $raid_info"
+	echo ""
+	echo -e "${YELLOW}Network:${NC}"
+	echo "  Interface:    $INTERFACE ($INTERFACE_MAC)"
+	echo "  IPv4:         $IPV4_ADDRESS/$IPV4_PREFIX"
+	echo "  Gateway:      $IPV4_GATEWAY"
+	if [[ -n "$IPV6_ADDRESS" ]]; then
+		echo "  IPv6:         $IPV6_ADDRESS"
+	fi
+	echo "  DNS:          $DNS_SERVERS"
+	echo -e "$vswitch_info"
+	echo ""
+	echo -e "${YELLOW}Software:${NC}"
+	echo "  MicroOS:      Tumbleweed (ContainerHost)"
+	echo "  Kernel mods:  $module_str"
+	echo "  K3s version:  $k3s_info"
+	if [[ -n "$PACKAGES" ]]; then
+		echo "  Extra pkgs:   $PACKAGES"
+	fi
+	echo ""
+	echo -e "${RED}⚠️  WARNING: This will ERASE ALL DATA on $TARGET_DISK${NC}"
+	if [[ "$ENABLE_RAID" == "1" ]]; then
+		echo -e "${RED}              and $SECOND_DISK!${NC}"
+	fi
+	echo ""
+
+	if [[ "$SKIP_CONFIRM" == "1" ]]; then
+		log "Skipping confirmation (--yes flag)"
+		return 0
+	fi
+
+	# Prompt for confirmation
+	echo -n "Continue with installation? [y/N]: "
+	read -r REPLY
+	if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+		echo ""
+		error "Installation cancelled by user"
+		exit 1
+	fi
+	echo ""
+}
+
+#######################################
 # Print summary
 #######################################
 print_summary() {
@@ -1339,6 +1474,7 @@ main() {
 
 	detect_network
 	detect_disks
+	confirm_installation
 	install_rescue_deps
 	download_image
 	write_image

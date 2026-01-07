@@ -1116,8 +1116,8 @@ set -e
 
 # Parse arguments
 SKIP_REBOOT=0
-for arg in "$@"; do
-    case $arg in
+for arg in "\$@"; do
+    case \$arg in
         --skip-reboot)
             SKIP_REBOOT=1
             shift
@@ -1304,15 +1304,28 @@ EOFSCRIPT
 	# Add the install command with or without version
 	if [[ -n "$k3s_version" ]]; then
 		cat >>"$mnt_root/install-k3s.sh" <<EOFSCRIPT
-curl -sfL https://get.k3s.io | ${install_version} INSTALL_K3S_EXEC="agent --config /etc/rancher/k3s/config.yaml" sh -
+curl -sfL https://get.k3s.io | ${install_version} INSTALL_K3S_SKIP_START=true INSTALL_K3S_SKIP_SELINUX_RPM=true INSTALL_K3S_EXEC="agent --config /etc/rancher/k3s/config.yaml" sh -
 EOFSCRIPT
 	else
 		cat >>"$mnt_root/install-k3s.sh" <<EOFSCRIPT
-curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="agent --config /etc/rancher/k3s/config.yaml" sh -
+curl -sfL https://get.k3s.io | INSTALL_K3S_SKIP_START=true INSTALL_K3S_SKIP_SELINUX_RPM=true INSTALL_K3S_EXEC="agent --config /etc/rancher/k3s/config.yaml" sh -
 EOFSCRIPT
 	fi
 
 	cat >>"$mnt_root/install-k3s.sh" <<'EOFSCRIPT'
+
+echo ""
+echo "=========================================="
+echo "Restoring SELinux context on k3s binary..."
+echo "=========================================="
+restorecon -v /usr/local/bin/k3s
+
+echo ""
+echo "=========================================="
+echo "Starting k3s service..."
+echo "=========================================="
+systemctl enable k3s-agent.service
+systemctl start k3s-agent.service
 
 echo ""
 echo "=========================================="
@@ -1424,7 +1437,7 @@ confirm_installation() {
 	echo -e "${YELLOW}System:${NC}"
 	echo "  Hostname:     $HOSTNAME"
 	echo -e "  SELinux:      $selinux_info"
-	echo "  SSH keys:     $ssh_info"
+	echo -e "  SSH keys:     $ssh_info"
 	echo ""
 	echo -e "${YELLOW}Storage:${NC}"
 	echo -e "  Target disk:  ${RED}$TARGET_DISK${NC} ($(lsblk -dn -o SIZE "$TARGET_DISK" 2>/dev/null || echo "?"))"

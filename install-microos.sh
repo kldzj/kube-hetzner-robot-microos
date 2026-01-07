@@ -47,6 +47,7 @@ HOSTNAME=""
 PACKAGES=""
 SKIP_REBOOT=0
 SKIP_CONFIRM=0
+FORCE_DOWNLOAD=0
 ENABLE_RAID=""
 KERNEL_MODULES=""
 SKIP_KERNEL_MODULES=""
@@ -152,6 +153,10 @@ parse_args() {
 			;;
 		--no-verify)
 			VERIFY_IMAGE=0
+			shift
+			;;
+		--force-download)
+			FORCE_DOWNLOAD=1
 			shift
 			;;
 		--hostname)
@@ -331,6 +336,7 @@ K3s Options:
 Other Options:
   --image-url URL        Custom MicroOS image URL
   --no-verify            Skip image checksum verification
+  --force-download       Force re-download even if image exists locally
   --ssh-key KEY          SSH public key for root access
   --ssh-key-url URL      URL to fetch SSH public key
   --packages LIST        Additional packages to install
@@ -366,6 +372,9 @@ Examples:
 
   # Skip confirmation prompt (automated installs)
   ./install-microos.sh --hostname node1 --yes
+
+  # Force re-download of MicroOS image even if it exists locally
+  ./install-microos.sh --hostname node1 --force-download
 EOF
 }
 
@@ -468,10 +477,51 @@ install_rescue_deps() {
 # Download and verify MicroOS image
 #######################################
 download_image() {
+	IMAGE_FILE="/tmp/microos.qcow2"
+
+	# Check if image already exists
+	if [[ -f "$IMAGE_FILE" ]]; then
+		local existing_size
+		existing_size=$(ls -lh "$IMAGE_FILE" | awk '{print $5}')
+
+		if [[ "$FORCE_DOWNLOAD" == "1" ]]; then
+			log "Force download requested, removing existing image..."
+			rm -f "$IMAGE_FILE"
+		elif [[ "$VERIFY_IMAGE" == "1" ]]; then
+			log "Found existing image: $IMAGE_FILE ($existing_size)"
+			log "Verifying checksum..."
+
+			local sha256_file="/tmp/microos.qcow2.sha256"
+			if wget --timeout=10 -q -O "$sha256_file" "$MICROOS_IMAGE_SHA256_URL" 2>/dev/null; then
+				local expected_hash actual_hash
+				expected_hash=$(awk '{print $1}' "$sha256_file")
+				actual_hash=$(sha256sum "$IMAGE_FILE" | awk '{print $1}')
+
+				if [[ "$expected_hash" == "$actual_hash" ]]; then
+					log "Checksum verified: $actual_hash"
+					log "Using existing image (skipping download)"
+					rm -f "$sha256_file"
+					return 0
+				else
+					warn "Checksum mismatch! Expected: $expected_hash, Got: $actual_hash"
+					warn "Re-downloading image..."
+					rm -f "$IMAGE_FILE"
+				fi
+				rm -f "$sha256_file"
+			else
+				warn "Could not download checksum file, skipping verification"
+				log "Using existing image (skipping download)"
+				return 0
+			fi
+		else
+			log "Found existing image: $IMAGE_FILE ($existing_size)"
+			log "Skipping verification and download (use --force-download to re-download)"
+			return 0
+		fi
+	fi
+
 	log "Downloading MicroOS image..."
 	log "URL: $MICROOS_IMAGE_URL"
-
-	IMAGE_FILE="/tmp/microos.qcow2"
 
 	wget --timeout=30 --waitretry=5 --tries=5 --retry-connrefused \
 		--progress=bar:force:noscroll \
@@ -1340,6 +1390,19 @@ confirm_installation() {
 		k3s_info="${K3S_VERSION}"
 	fi
 
+	# Build image status info
+	local image_info="will download"
+	local image_file="/tmp/microos.qcow2"
+	if [[ -f "$image_file" ]]; then
+		local existing_size
+		existing_size=$(ls -lh "$image_file" 2>/dev/null | awk '{print $5}' || echo "?")
+		if [[ "$FORCE_DOWNLOAD" == "1" ]]; then
+			image_info="will re-download (exists: $existing_size)"
+		else
+			image_info="${GREEN}will reuse existing${NC} ($existing_size)"
+		fi
+	fi
+
 	# Build vSwitch info
 	local vswitch_info=""
 	if [[ -n "$VSWITCH_VLAN_ID" ]]; then
@@ -1379,6 +1442,7 @@ confirm_installation() {
 	echo ""
 	echo -e "${YELLOW}Software:${NC}"
 	echo "  MicroOS:      Tumbleweed (ContainerHost)"
+	echo -e "  Image:        $image_info"
 	echo "  Kernel mods:  $module_str"
 	echo "  K3s version:  $k3s_info"
 	if [[ -n "$PACKAGES" ]]; then

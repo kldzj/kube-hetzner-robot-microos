@@ -1283,7 +1283,7 @@ echo ""
 # Check if we can ping other nodes (if configured)
 if grep -q "server:" /etc/rancher/k3s/config.yaml; then
     echo "Checking connectivity to cluster server..."
-    server=$(grep "^server:" /etc/rancher/k3s/config.yaml | awk '{print $2}' | sed 's/https:\/\///' | sed 's/:6443//')
+    server=$(grep "^server:" /etc/rancher/k3s/config.yaml | awk '{print $2}' | tr -d '"' | sed 's/https:\/\///' | sed 's/:6443//')
     if [[ -n "$server" ]]; then
         if ping -c 1 -W 2 "$server" &>/dev/null; then
             echo "✓ Successfully pinged $server"

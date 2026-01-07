@@ -52,6 +52,7 @@ SKIP_KERNEL_MODULES=""
 DISABLE_SELINUX=""
 SSH_PUBLIC_KEY=""
 SSH_PUBLIC_KEY_URL=""
+K3S_VERSION=""
 
 # DNS settings (Hetzner defaults)
 DNS_SERVERS="${DNS_SERVERS:-185.12.64.1;185.12.64.2}"
@@ -244,6 +245,10 @@ parse_args() {
 			VSWITCH_MTU=$(require_arg "$1" "${2:-}")
 			shift 2
 			;;
+		--k3s-version)
+			K3S_VERSION=$(require_arg "$1" "${2:-}")
+			shift 2
+			;;
 		-h | --help)
 			show_help
 			exit 0
@@ -314,6 +319,9 @@ vSwitch/VLAN Options (for Hetzner Cloud connectivity):
   --vswitch-gateway ADDR Gateway IP for vSwitch subnet
   --vswitch-routes CIDR  Routes via vSwitch gateway (comma-separated)
   --vswitch-mtu SIZE     MTU size (default: 1400)
+
+K3s Options:
+  --k3s-version VERSION  K3s version to install (e.g., v1.31.14+k3s1)
 
 Other Options:
   --image-url URL        Custom MicroOS image URL
@@ -667,6 +675,7 @@ configure_system() {
 	configure_ssh "$mnt_root"
 	write_kube_hetzner_configs "$mnt" "$mnt_root"
 	create_postinstall_script "$mnt_root" "${EXPORTED_KERNEL_MODULES:-}" "$DISABLE_SELINUX"
+	create_k3s_install_script "$mnt_root" "$K3S_VERSION"
 
 	sync
 	umount "$mnt_root"
@@ -1042,9 +1051,20 @@ create_postinstall_script() {
 # MicroOS Post-Installation Script for kube-hetzner
 #
 # Run after first boot to install packages and configure the system.
-# Requires a reboot after completion.
+# This script will automatically reboot to activate the transactional-update snapshot.
 #
 set -e
+
+# Parse arguments
+SKIP_REBOOT=0
+for arg in "$@"; do
+    case $arg in
+        --skip-reboot)
+            SKIP_REBOOT=1
+            shift
+            ;;
+    esac
+done
 
 echo "=========================================="
 echo "MicroOS Post-Install for kube-hetzner"
@@ -1117,15 +1137,139 @@ echo "=========================================="
 echo "Post-install complete!"
 echo "=========================================="
 echo ""
-echo "Please reboot to activate the new snapshot:"
-echo "  reboot"
-echo ""
-echo "Then, create your k3s config and install k3s with:"
-echo "  curl -sfL https://get.k3s.io | INSTALL_K3S_SKIP_SELINUX_RPM=true INSTALL_K3S_VERSION=\"YOUR_VERSION\" INSTALL_K3S_EXEC=\"agent --config /etc/rancher/k3s/config.yaml\" sh -"
-echo ""
+
+if [[ "$SKIP_REBOOT" == "1" ]]; then
+    echo "⚠️  WARNING: You have skipped the automatic reboot!"
+    echo ""
+    echo "The transactional-update snapshot has been created but is NOT active yet."
+    echo "Any changes you make now will be lost when you reboot."
+    echo ""
+    echo "To activate the new snapshot, you MUST reboot:"
+    echo "  reboot"
+    echo ""
+    echo "After reboot, create your k3s config and run:"
+    echo "  /root/install-k3s.sh"
+    echo ""
+else
+    echo "System will reboot in 10 seconds to activate the new snapshot..."
+    echo "(Press Ctrl+C to cancel, but this is NOT recommended)"
+    echo ""
+    echo "After reboot, create your k3s config and run:"
+    echo "  /root/install-k3s.sh"
+    echo ""
+    sleep 10
+    reboot
+fi
 EOFSCRIPT
 
 	chmod +x "$mnt_root/post-install.sh"
+}
+
+#######################################
+# Create k3s install script
+#######################################
+create_k3s_install_script() {
+	local mnt_root="$1"
+	local k3s_version="$2"
+
+	log "Creating k3s install script..."
+
+	# Build INSTALL_K3S_VERSION if version is specified
+	local install_version=""
+	if [[ -n "$k3s_version" ]]; then
+		install_version="INSTALL_K3S_VERSION=\"$k3s_version\""
+		log "k3s version will be: $k3s_version"
+	else
+		log "k3s version not specified - will install latest"
+	fi
+
+	cat >"$mnt_root/install-k3s.sh" <<'EOFSCRIPT'
+#!/bin/bash
+#
+# K3s Install Script for kube-hetzner
+#
+# Run this after the post-install reboot to install k3s.
+# Make sure you have created /etc/rancher/k3s/config.yaml before running this.
+#
+set -e
+
+echo "=========================================="
+echo "K3s Installation Script"
+echo "=========================================="
+echo ""
+
+# Check if config exists
+if [[ ! -f /etc/rancher/k3s/config.yaml ]]; then
+    echo "❌ ERROR: /etc/rancher/k3s/config.yaml not found!"
+    echo ""
+    echo "Please create your k3s config file first:"
+    echo "  mkdir -p /etc/rancher/k3s"
+    echo "  nano /etc/rancher/k3s/config.yaml"
+    echo ""
+    echo "See https://github.com/mysticaltech/terraform-hcloud-kube-hetzner/blob/master/docs/add-robot-server.md"
+    echo "for configuration details."
+    echo ""
+    echo "After creating the config, run this script again."
+    exit 1
+fi
+
+echo "✓ Found k3s config at /etc/rancher/k3s/config.yaml"
+echo ""
+
+# Display config (sanitized)
+echo "Config contents (secrets hidden):"
+grep -vE "(token|password|key|secret)" /etc/rancher/k3s/config.yaml || true
+echo ""
+
+# Check if we can ping other nodes (if configured)
+if grep -q "server:" /etc/rancher/k3s/config.yaml; then
+    echo "Checking connectivity to cluster server..."
+    server=$(grep "^server:" /etc/rancher/k3s/config.yaml | awk '{print $2}' | sed 's/https:\/\///' | sed 's/:6443//')
+    if [[ -n "$server" ]]; then
+        if ping -c 1 -W 2 "$server" &>/dev/null; then
+            echo "✓ Successfully pinged $server"
+        else
+            echo "⚠️  Warning: Cannot ping $server - check network connectivity"
+        fi
+    fi
+else
+    echo "Initializing as a server node (no server: config found)"
+fi
+
+echo ""
+echo "Installing k3s..."
+echo ""
+
+EOFSCRIPT
+
+	# Add the install command with or without version
+	if [[ -n "$k3s_version" ]]; then
+		cat >>"$mnt_root/install-k3s.sh" <<EOFSCRIPT
+curl -sfL https://get.k3s.io | ${install_version} INSTALL_K3S_EXEC="agent --config /etc/rancher/k3s/config.yaml" sh -
+EOFSCRIPT
+	else
+		cat >>"$mnt_root/install-k3s.sh" <<EOFSCRIPT
+curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="agent --config /etc/rancher/k3s/config.yaml" sh -
+EOFSCRIPT
+	fi
+
+	cat >>"$mnt_root/install-k3s.sh" <<'EOFSCRIPT'
+
+echo ""
+echo "=========================================="
+echo "K3s installation complete!"
+echo "=========================================="
+echo ""
+echo "Check k3s status:"
+echo "  systemctl status k3s"
+echo ""
+echo "View logs:"
+echo "  journalctl -u k3s -f"
+echo ""
+EOFSCRIPT
+
+	chmod +x "$mnt_root/install-k3s.sh"
+	log "k3s install script created at /root/install-k3s.sh"
 }
 
 #######################################
@@ -1169,6 +1313,7 @@ print_summary() {
 	log "  DNS:          $DNS_SERVERS"
 	[[ ${#modules[@]} -gt 0 ]] && log "  Kernel modules: ${modules[*]}"
 	[[ "$DISABLE_SELINUX" == "1" ]] && log "  SELinux:      disabled" || log "  SELinux:      enabled"
+	[[ -n "$K3S_VERSION" ]] && log "  K3s version:  $K3S_VERSION" || log "  K3s version:  latest"
 
 	if [[ -n "$VSWITCH_VLAN_ID" ]]; then
 		log "  vSwitch:      VLAN $VSWITCH_VLAN_ID ($VSWITCH_IP/$VSWITCH_NETMASK)"
@@ -1180,7 +1325,7 @@ print_summary() {
 	log "  1. SSH to root@$IPV4_ADDRESS"
 	log "  2. Run: /root/post-install.sh"
 	log "  3. Reboot again"
-	log "  4. Install k3s or join to kube-hetzner cluster"
+	log "  4. Create k3s config and run: /root/install-k3s.sh"
 	echo ""
 }
 

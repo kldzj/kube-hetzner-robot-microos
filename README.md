@@ -28,18 +28,29 @@ chmod +x install-microos.sh
 ```bash
 ssh root@YOUR_IP
 /root/post-install.sh
-reboot
 ```
 
-5. Create your k3s config (see [docs/add-robot-server.md](https://github.com/mysticaltech/terraform-hcloud-kube-hetzner/blob/master/docs/add-robot-server.md#5-robot-node-k3s-agent-configuration)).
+The post-install script will automatically reboot after 10 seconds to activate the transactional-update snapshot.
+
+If you need to skip the automatic reboot (not recommended), use `--skip-reboot`:
+```bash
+/root/post-install.sh --skip-reboot
+```
+
+5. After the second reboot, create your k3s config (see [docs/add-robot-server.md](https://github.com/mysticaltech/terraform-hcloud-kube-hetzner/blob/master/docs/add-robot-server.md#5-robot-node-k3s-agent-configuration)).
 
 6. Make sure you can ping other nodes.
 
-7. Install k3s:
+7. Install k3s using the provided script:
 
 ```bash
-curl -sfL https://get.k3s.io | INSTALL_K3S_SKIP_SELINUX_RPM=true INSTALL_K3S_VERSION="YOUR_VERSION" INSTALL_K3S_EXEC="agent --config /etc/rancher/k3s/config.yaml" sh -
+/root/install-k3s.sh
 ```
+
+This script will:
+- Verify your k3s config exists
+- Check network connectivity
+- Install k3s with the correct settings
 
 ## Usage
 
@@ -74,6 +85,9 @@ vSwitch/VLAN Options:
   --vswitch-gateway ADDR Gateway IP for vSwitch subnet
   --vswitch-routes CIDR  Routes via vSwitch (comma-separated)
   --vswitch-mtu SIZE     MTU size (default: 1400)
+
+K3s Options:
+  --k3s-version VERSION  K3s version to install (e.g., v1.31.14+k3s1)
 
 Other Options:
   --image-url URL        Custom MicroOS image URL
@@ -133,6 +147,16 @@ If you prefer to run without SELinux (not recommended for production):
 ./install-microos.sh --hostname node1 --disable-selinux
 ```
 
+### With Specific K3s Version
+
+To install a specific k3s version:
+
+```bash
+./install-microos.sh --hostname node1 --k3s-version v1.31.14+k3s1
+```
+
+If you omit `--k3s-version`, the installer will use the latest k3s version.
+
 ### With vSwitch for Hetzner Cloud Connectivity
 
 Connect your Robot server to Hetzner Cloud instances via vSwitch:
@@ -168,8 +192,11 @@ If you set up a vSwitch with routes to your Cloud network, you'll want to set `f
 3. **Disk Setup**: Writes the image to disk and optionally configures RAID1
 4. **Partition Resize**: Expands partitions to use full disk space
 5. **Network Configuration**: Configures NetworkManager with static IP (uses MAC address matching)
-6. **kube-hetzner Configs**: Installs required configs, repos, and SELinux policies
-7. **Post-install Script**: Creates a script to run after first boot
+6. **SELinux Configuration**: Configures SELinux policy (can be disabled with `--disable-selinux`)
+7. **Kernel Modules**: Configures kernel modules to load on boot via `/etc/modules-load.d/`
+8. **kube-hetzner Configs**: Installs required configs, repos, and SELinux policies
+9. **Post-install Script**: Creates a script that runs `transactional-update` and automatically reboots
+10. **K3s Install Script**: Creates `/root/install-k3s.sh` for easy k3s installation with optional version pinning
 
 ## RAID1 Details
 

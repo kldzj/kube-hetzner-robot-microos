@@ -48,6 +48,7 @@ PACKAGES=""
 SKIP_REBOOT=0
 SKIP_CONFIRM=0
 FORCE_DOWNLOAD=0
+FORCE_IPV4=0
 ENABLE_RAID=""
 KERNEL_MODULES=""
 SKIP_KERNEL_MODULES=""
@@ -157,6 +158,10 @@ parse_args() {
 			;;
 		--force-download)
 			FORCE_DOWNLOAD=1
+			shift
+			;;
+		--force-ipv4)
+			FORCE_IPV4=1
 			shift
 			;;
 		--hostname)
@@ -337,6 +342,7 @@ Other Options:
   --image-url URL        Custom MicroOS image URL
   --no-verify            Skip image checksum verification
   --force-download       Force re-download even if image exists locally
+  --force-ipv4           Force IPv4 for all downloads in rescue system
   --ssh-key KEY          SSH public key for root access
   --ssh-key-url URL      URL to fetch SSH public key
   --packages LIST        Additional packages to install
@@ -479,6 +485,10 @@ install_rescue_deps() {
 download_image() {
 	IMAGE_FILE="/tmp/microos.qcow2"
 
+	# Build wget flags
+	local wget_flags=""
+	[[ "$FORCE_IPV4" == "1" ]] && wget_flags="-4" && log "Forcing IPv4 for downloads"
+
 	# Check if image already exists
 	if [[ -f "$IMAGE_FILE" ]]; then
 		local existing_size
@@ -492,7 +502,7 @@ download_image() {
 			log "Verifying checksum..."
 
 			local sha256_file="/tmp/microos.qcow2.sha256"
-			if wget --timeout=10 -q -O "$sha256_file" "$MICROOS_IMAGE_SHA256_URL" 2>/dev/null; then
+			if wget $wget_flags --timeout=10 -q -O "$sha256_file" "$MICROOS_IMAGE_SHA256_URL" 2>/dev/null; then
 				local expected_hash actual_hash
 				expected_hash=$(awk '{print $1}' "$sha256_file")
 				actual_hash=$(sha256sum "$IMAGE_FILE" | awk '{print $1}')
@@ -523,7 +533,7 @@ download_image() {
 	log "Downloading MicroOS image..."
 	log "URL: $MICROOS_IMAGE_URL"
 
-	wget --timeout=30 --waitretry=5 --tries=5 --retry-connrefused \
+	wget $wget_flags --timeout=30 --waitretry=5 --tries=5 --retry-connrefused \
 		--progress=bar:force:noscroll \
 		-O "$IMAGE_FILE" "$MICROOS_IMAGE_URL" ||
 		die "Failed to download MicroOS image"
@@ -534,7 +544,7 @@ download_image() {
 		log "Verifying image checksum..."
 		local sha256_file="/tmp/microos.qcow2.sha256"
 
-		if wget --timeout=10 -q -O "$sha256_file" "$MICROOS_IMAGE_SHA256_URL" 2>/dev/null; then
+		if wget $wget_flags --timeout=10 -q -O "$sha256_file" "$MICROOS_IMAGE_SHA256_URL" 2>/dev/null; then
 			local expected_hash actual_hash
 			expected_hash=$(awk '{print $1}' "$sha256_file")
 			actual_hash=$(sha256sum "$IMAGE_FILE" | awk '{print $1}')
